@@ -1,0 +1,1272 @@
+   METHOD processor_out.
+*&---------------------------------------------------------------------*
+*& Method  PROCESSOR_OUT
+*&
+*&---------------------------------------------------------------------*
+* Identificador: FI-30-01
+* Clase        : ZCL_FI_COMPL_PAGOS_OUT
+* Tipo Objeto  : Metodo
+* Descripción  : Complementos pago factura
+* Autor Prog.  : FDS NetW Conslting.
+* Contacto     : fabrica@netwconsulting.com
+* Fecha Creac. :
+*----------------------------------------------------------------------*
+*Ordenes de transporte:
+*----------------------------------------------------------------------*
+*Fecha:                | CR#  | Autor            |Modificación
+*----------------------------------------------------------------------*
+* @0009 | 2023.04.17 | ERDK957054 | Sebastian Henao - Fabrica Netw
+* Detalles: Control de Cambio Nueva logica para campos 142 y 159 para
+* solucionar error en el calculo del IVA.
+*-----------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+*Fecha:              | CR#  | Autor            |Modificación
+*------------------------------------------------------------------------------------*
+* @0010 | 27.06.2023 | ERDK957784 | Daniel Quintero C - Fabrica Netw
+* Detalles: Control de Cambio. Nueva logica para los procesos de pagos totales y págos
+*     parciales para las partidas abiertas.
+*------------------------------------------------------------------------------------*
+     DATA:
+       lv_fecha_cont  TYPE string,
+       lv_importe     TYPE char50,
+       lv_title       TYPE char30,
+       ls_timbresuuid TYPE zfi_timbresuuid,
+       ls_out         TYPE zcomplemento_pagos_notificacio,
+       lv_timbre_fact TYPE zfi_timbresuuid-timbres_facturas,
+       lv_notacion    TYPE abap_bool,
+       lv_name        TYPE thead-tdname,
+       lv_forma_pago  TYPE zdet_fact_compl_pago-forma_pago_p,
+       lv_banco_ext   TYPE zdet_fact_compl_pago-nom_bco_ord_ex,
+       fact           TYPE belnr_d,
+       lv_reglade3    TYPE char10,
+       lv_bdr2sint    TYPE char10,
+       lv_im_dr2      TYPE char10,
+       lv_aux1        TYPE fwbas_bses,
+       lv_aux2        TYPE fwste,
+       lv_aux3        TYPE fwbas_bses,
+       lv_aux4        TYPE fwste,
+       lv_basep       TYPE wertv8.
+*   Variables para actualizar tabla ZFI_COMPL_TIMBRE
+     TYPES:
+         gtt_uuid TYPE STANDARD TABLE OF zfi_compl_timbre-uuid ##NEEDED.
+     DATA:
+       lwa_compl_timbre TYPE zfi_compl_timbre,
+       lti_compl_timbre TYPE STANDARD TABLE OF zfi_compl_timbre.
+
+*+@0010 {
+     TYPES: BEGIN OF gs_parciales,
+              bukrs TYPE bukrs,
+              belnr TYPE belnr_d,
+              wrbtr TYPE wrbtr,
+              rebzg TYPE rebzg,
+            END OF gs_parciales.
+
+     TYPES: BEGIN OF gs_nota_cre,
+              belnr TYPE belnr_d,
+            END OF gs_nota_cre.
+
+     TYPES: BEGIN OF gs_nota_cre2,
+              bukrs TYPE bukrs,
+              belnr TYPE belnr_d,
+            END OF gs_nota_cre2.
+
+     TYPES: BEGIN OF gs_nota_credito,
+              bukrs    TYPE bukrs,
+              belnr    TYPE belnr_d,
+              witht    TYPE witht,
+              wt_qbshh TYPE wertv8,
+            END OF gs_nota_credito.
+
+     TYPES: BEGIN OF gs_nota1_cre,
+              bukrs TYPE bukrs,
+              belnr TYPE belnr_d,
+              fwste TYPE fwste,
+            END OF gs_nota1_cre.
+
+     TYPES: BEGIN OF gs_impordr2,
+              bukrs TYPE bukrs,
+              belnr TYPE belnr_d,
+              fwbas TYPE fwbas_bses,
+              fwste TYPE fwste,
+            END OF   gs_impordr2.
+
+     TYPES: BEGIN OF gs_basep,
+              belnr  TYPE belnr_d,
+              basiva TYPE char20,
+            END OF gs_basep.
+
+     TYPES: BEGIN OF gs_importep,
+              belnr  TYPE belnr_d,
+              impiva TYPE fwste,
+            END OF gs_importep.
+
+     TYPES: BEGIN OF gs_basedr1,
+              bukrs    TYPE bukrs,
+              belnr    TYPE belnr_d,
+              witht    TYPE witht,
+              wt_qbshh TYPE wertv8,
+              wt_qbshb TYPE wertv8,
+            END OF   gs_basedr1.
+
+     TYPES: BEGIN OF gs_zfic_obj,
+              id_obj  TYPE char20,
+              codimpo TYPE char30,
+              ob_imdr TYPE char255,
+            END OF   gs_zfic_obj.
+
+     DATA: ls_nota_cre2     TYPE gs_nota_cre2,
+           ls_nota_cre      TYPE gs_nota_cre,
+           ls_impordr2      TYPE gs_impordr2 ##NEEDED,
+           ls_basedr1       TYPE gs_basedr1 ##NEEDED,
+           ls_basep         TYPE gs_basep,
+           ls_importep      TYPE gs_importep,
+           lti_nota_cre     TYPE STANDARD TABLE OF gs_nota_cre,
+           lti_nota_credito TYPE STANDARD TABLE OF gs_nota_credito ##NEEDED,
+           lti_credito      TYPE STANDARD TABLE OF gs_nota_cre2,
+           lt_basedr1       TYPE STANDARD TABLE OF gs_basedr1,
+           lt_nota1_cre     TYPE STANDARD TABLE OF gs_nota1_cre,
+           lti_impordr2     TYPE STANDARD TABLE OF gs_impordr2,
+           lti_bsetsinrt    TYPE STANDARD TABLE OF gs_impordr2,
+           lti_basep        TYPE STANDARD TABLE OF gs_basep,
+           lti_importep     TYPE STANDARD TABLE OF gs_importep,
+           lti_parci        TYPE STANDARD TABLE OF gs_parciales.
+
+     DATA lt_obj TYPE STANDARD TABLE OF gs_zfic_obj.
+
+     DATA:
+       lo_objint      TYPE REF TO zco_complemento_pagos_out.
+*}+@0010
+     TRY.
+         CREATE OBJECT lo_objint.
+       CATCH cx_ai_system_fault INTO DATA(lo_ms) ##NEEDED  ##NO_HANDLER.
+
+     ENDTRY.
+
+     "Se instancia la clase UTIL.
+     DATA(lo_util) = lcl_util=>get_instance( ).
+
+     "Se instancia la clase DAO.
+     DATA(lo_dao) = lcl_dao=>get_instance( ).
+
+     CHECK is_data IS NOT INITIAL.
+
+     DATA(lt_detalle) = is_data-detalle.
+
+     READ TABLE it_bkpf INTO DATA(ls_bkpf) INDEX 1.
+
+     lv_fecha_cont = ls_bkpf-budat.
+     conv_date( CHANGING cv_date = lv_fecha_cont ).
+
+     lo_util->get_documentos_repricar(
+       EXPORTING
+         iv_sociedad  = ls_bkpf-bukrs
+         iv_documento = ls_bkpf-belnr
+         iv_ejercicio = ls_bkpf-gjahr
+       IMPORTING
+         et_bsid      = DATA(lt_bsid)
+         et_bsad      = DATA(lt_bsad)
+     ).
+
+     DATA(lt_param) = lo_dao->get_parameters( iv_bukrs = ls_bkpf-bukrs ).
+
+     LOOP AT it_bseg INTO DATA(ls_bseg).
+
+       CONCATENATE ls_bseg-bukrs ls_bseg-belnr ls_bseg-gjahr ls_bseg-buzei
+           INTO lv_name.
+
+       lv_forma_pago   = read_text(
+                         iv_id     = gc_constantes-id_med_pago
+                         iv_name   = lv_name
+                         iv_object = gc_constantes-obj_text
+                       ).
+
+       lv_banco_ext    = read_text(
+                         iv_id     = gc_constantes-id_banc_ord_ex
+                         iv_name   = lv_name
+                         iv_object = gc_constantes-obj_text
+                                  ).
+       IF lv_forma_pago IS NOT INITIAL.
+         EXIT.
+       ENDIF.
+     ENDLOOP.
+
+*   se optiene si el separador de decimales del usurio que ejecuta es punto o coma
+     CALL FUNCTION '/OSP/GET_DECIMAL_NOTATION'
+       EXPORTING
+         i_uname             = sy-uname
+       IMPORTING
+         ev_decimal_notation = lv_notacion.
+
+     "Si la tabla detalle tiene mas de 36 registros (UUIDs) entonces actualizar tabla
+     " ZFI_COMPL_TIMBRE
+     IF lt_detalle IS NOT INITIAL.
+       IF lines( lt_detalle ) > 36 ##NUMBER_OK.
+         lv_timbre_fact = '*'.
+       ENDIF.
+     ENDIF.
+*+@0004{
+     DATA(lv_total_retenciones_iva) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_retenciones_isr) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_retenciones_ieps) = CONV decfloat34( '0.00' )   ##NEEDED.
+     DATA(iv_total_traslados_baseiva_16) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_traslados_baseiva_2) = CONV decfloat34( '0.00' ) ##NEEDED.
+     DATA(iv_total_retenciones_iva_2) = CONV decfloat34( '0.00' ) ##NEEDED.
+     DATA(iv_total_retenciones_iva_3) = CONV decfloat34( '0.00' ) ##NEEDED.
+     DATA(iv_total_traslados_imposiva_16) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_tras_baseiva_exento) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_traslados_baseiva_8) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_traslados_imposiva_8) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_traslados_baseiva_0) = CONV decfloat34( '0.00' ).
+     DATA(iv_total_traslados_imposiva_0) = CONV decfloat34( '0.00' ).
+     DATA(lv_importe_p1) = CONV decfloat34( '0.00' ).
+     DATA(lv_base_dr_2) =  CONV decfloat34( '0.00' ).
+     DATA(iv_importe_p2) = CONV decfloat34( '0.00' ).
+     DATA(lv_base_dr_4)  = CONV decfloat34( '0.00' ).
+     DATA(lv_sepdec) = '.'.
+     DATA(lv_dr) = 0.
+     DATA(lv_importe_dr) = 0.
+*     "@0009
+     DATA: lv_temp142cal TYPE string, "Variable para almacenar temporalmente el nuevo valor del campo 142
+           lv_temp159cal TYPE string, "Variable para almacenar temporalmente el nuevo valor del campo 159
+*     "@0009
+*+@0010 {
+           lv_temp137    TYPE string. "Variable para almacenar temporalmente el nuevo valor del campo 137 pagos parciales.
+*}+@0010
+*}+@0004
+*********************************PARA DEBUG -  NO OLVIDAR BORRAR AL FINALIZAR *******************
+     DATA: lv VALUE 'X'.
+     DO.
+       IF sy-uname NE 'SAZAMBRANO' ##USER_OK.
+         EXIT.
+       ELSE.
+         IF lv IS INITIAL .
+           EXIT.
+         ENDIF.
+       ENDIF.
+     ENDDO.
+*****************************************************************************************************
+
+     LOOP AT lt_detalle ASSIGNING FIELD-SYMBOL(<fs_detalle>).
+       IF lv_title IS INITIAL.
+         CONCATENATE 'P' <fs_detalle>-rfc_cliente <fs_detalle>-serie
+                      ls_bkpf-belnr
+              INTO lv_title.
+       ENDIF.
+       <fs_detalle>-fecha = lv_fecha_cont.
+       <fs_detalle>-folio = ls_bkpf-belnr.
+
+       IF lv_timbre_fact IS INITIAL.
+         lv_timbre_fact = <fs_detalle>-id_documento.
+       ELSEIF lv_timbre_fact = '*'.
+         CLEAR: lwa_compl_timbre.
+         lwa_compl_timbre-mandt        = sy-mandt.
+         lwa_compl_timbre-bukrs        = ls_bkpf-bukrs.
+         lwa_compl_timbre-poliza       = ls_bkpf-belnr.
+         lwa_compl_timbre-gjahr        = ls_bkpf-gjahr.
+         lwa_compl_timbre-consecutivo  = sy-tabix.
+         lwa_compl_timbre-uuid         = <fs_detalle>-id_documento.
+         APPEND lwa_compl_timbre TO lti_compl_timbre.
+       ELSE.
+         CONCATENATE lv_timbre_fact <fs_detalle>-id_documento
+                    INTO lv_timbre_fact SEPARATED BY ';'.
+       ENDIF.
+
+       WRITE ls_bseg-wrbtr TO lv_importe CURRENCY <fs_detalle>-moneda_dr DECIMALS 2.
+       CONDENSE lv_importe NO-GAPS.
+
+       IF lv_notacion EQ abap_true.
+         TRANSLATE lv_importe USING ', '.
+       ELSE.
+         TRANSLATE lv_importe USING '. '.
+         TRANSLATE lv_importe USING ',.'.
+       ENDIF.
+
+       CONDENSE lv_importe  NO-GAPS.
+       <fs_detalle>-monto          = lv_importe.
+       CLEAR: lv_importe.
+
+       READ TABLE lt_bsid INTO DATA(ls_bsid) ##WARN_OK
+         WITH KEY
+           belnr = <fs_detalle>-colonia_3
+           bschl = '01'.
+
+       IF sy-subrc NE 0.
+         ls_bsid-importe_saldo = 0.
+       ENDIF.
+
+       WRITE ls_bsid-importe_saldo_md TO lv_importe DECIMALS 2.
+       IF lv_notacion EQ abap_true.
+         TRANSLATE lv_importe USING ', '.
+       ELSE.
+         TRANSLATE lv_importe USING '. '.
+         TRANSLATE lv_importe USING ',.'.
+       ENDIF.
+       CONDENSE lv_importe NO-GAPS.
+       <fs_detalle>-imp_sald_inso = lv_importe.
+       <fs_detalle>-imp_pagado = <fs_detalle>-imp_saldo_ant - <fs_detalle>-imp_sald_inso.
+       CONDENSE <fs_detalle>-imp_pagado NO-GAPS.
+
+       <fs_detalle>-forma_pago_p    = lv_forma_pago.
+       <fs_detalle>-nom_bco_ord_ex  = lv_banco_ext.
+
+*+@0004{
+       fact = <fs_detalle>-colonia_3.
+       READ TABLE lt_bsid INTO DATA(ls_bsid1)  ##NEEDED
+           WITH KEY
+             belnr = fact
+             bschl = '01'.
+
+       IF sy-subrc EQ 0.
+         DATA(iv_bsid) = 1.
+       ELSE.
+         iv_bsid = 0.
+       ENDIF.
+
+       READ TABLE lt_bsad INTO DATA(ls_bsad) ##NEEDED
+           WITH KEY
+             belnr = fact
+             bschl = '01'.
+
+       IF sy-subrc EQ 0.
+         DATA(iv_bsad) = 1.
+       ELSE.
+         iv_bsad = 0.
+       ENDIF.
+
+       IF ( iv_bsad EQ 1 ) OR ( iv_bsid EQ 1 ).
+         fact = <fs_detalle>-colonia_3.
+         DATA(porcentaje) = CONV decfloat34( <fs_detalle>-imp_pagado ) / CONV decfloat34( <fs_detalle>-imp_saldo_ant ).
+*+@0006{
+         "133
+         DATA(lv_base_dr) = lo_dao->get_base_dr(
+                                     iv_bukrs = ls_bkpf-bukrs
+                                     iv_belnr = fact
+                                     iv_deta  = 'IMPTO_RETE1' ) .
+*+@0010 {
+         IF lv_base_dr IS NOT INITIAL.
+
+           LOOP AT lt_bsad ASSIGNING FIELD-SYMBOL(<fs_bsad>) WHERE zuonr NE space.
+             IF <fs_bsad>-belnr(1) = '4'.
+               CLEAR:   <fs_bsad>-zuonr .
+             ENDIF.
+           ENDLOOP.
+
+           SELECT bukrs belnr witht wt_qbshh
+            FROM with_item
+             INTO TABLE lti_nota_credito
+              WHERE   belnr = <fs_detalle>-colonia_3.
+
+           LOOP AT lt_bsad INTO DATA(ls_bsad_2) WHERE zuonr NE space.
+             ls_nota_cre-belnr     = ls_bsad_2-belnr.
+             APPEND ls_nota_cre TO lti_nota_cre.
+           ENDLOOP.
+
+           IF lti_nota_cre IS NOT INITIAL.
+           SELECT  belnr witht wt_qsshb wt_qbshh
+            FROM with_item
+             INTO TABLE lt_basedr1
+              FOR ALL ENTRIES IN lti_nota_cre
+               WHERE   bukrs = 'SL00'
+               AND     belnr = lti_nota_cre-belnr
+               AND     witht = '47'.
+           ENDIF.
+
+           IF <fs_detalle>-imp_sald_inso EQ 0.
+             READ TABLE lt_basedr1 INTO DATA(basedr1) WITH KEY witht = '47'.
+             IF sy-subrc = 0.
+               DATA(lv_basedr1_aux)   = basedr1-wt_qbshh + lv_base_dr.
+               DATA(lv_basedr1_float) = CONV decfloat34( '0.00' ).
+               lv_basedr1_float       = lv_basedr1_aux.
+               IF sy-subrc = 0.
+                 lv_base_dr           = lv_basedr1_float.
+               ENDIF.
+             ENDIF.
+           ELSE.
+             lv_base_dr  = ls_bseg-wrbtr.
+           ENDIF.
+         ENDIF.
+*}+@0010
+         IF lv_base_dr NE space.
+           <fs_detalle>-base_dr = CONV decfloat34( lv_base_dr ) * porcentaje.
+           IF <fs_detalle>-base_dr CA lv_sepdec.
+             SPLIT <fs_detalle>-base_dr AT lv_sepdec INTO DATA(texta133) DATA(textb133).
+             <fs_detalle>-base_dr = texta133 && '.' && textb133(2).
+           ELSE.
+             <fs_detalle>-base_dr = <fs_detalle>-base_dr && '.00'.
+           ENDIF.
+           IF CONV i( <fs_detalle>-base_dr ) EQ 0.
+             <fs_detalle>-base_dr = space.
+           ENDIF.
+         ENDIF.
+*+@0010 {
+         IF <fs_detalle>-imp_sald_inso NE 0.
+           <fs_detalle>-base_dr = CONV decfloat34( lv_base_dr ).
+         ENDIF.
+*}+@0010
+         "137
+         lo_dao->get_importe_dr( ##NEEDED
+          EXPORTING
+            iv_bukrs      = ls_bkpf-bukrs
+            iv_belnr      = fact
+            iv_deta       = 'IMPTO_RETE1'
+          IMPORTING
+            rs_importe_dr = DATA(lv_aux_qbshb)
+            rs_qsatz      = DATA(lv_aux_qsatz) ).
+*+@0010 {
+         IF <fs_detalle>-imp_sald_inso EQ 0.
+           IF sy-subrc = 0.
+             LOOP AT lt_basedr1 INTO DATA(ls_ntcred) WHERE belnr NE space AND witht = '47'  .
+               IF sy-subrc = 0.
+                 DATA(import_dr_aux) = CONV decfloat34( ls_ntcred-wt_qbshb + lv_aux_qbshb ).    """""""" 28.06.2023 """""""""
+                 lv_aux_qbshb = import_dr_aux.
+               ENDIF.
+             ENDLOOP.
+           ENDIF.
+         ELSE.
+           LOOP AT it_bseg INTO DATA(ls_parciales) WHERE qsskz = '27' AND ktosl NE space AND zuonr = sy-datum.
+             READ TABLE lt_basedr1 INTO DATA(ls_parciales2) INDEX 1.
+             DATA(import_dr_par) = CONV decfloat34( ls_parciales2-wt_qbshb + ls_parciales-dmbtr ).
+             lv_aux_qbshb  = import_dr_par.
+             EXIT.
+           ENDLOOP.
+         ENDIF.
+*}+@0010
+         IF lv_aux_qbshb NE space.
+           <fs_detalle>-importe_dr  = CONV decfloat34( lv_aux_qbshb ) * porcentaje .
+           IF <fs_detalle>-importe_dr  CA lv_sepdec.
+             SPLIT <fs_detalle>-importe_dr  AT lv_sepdec INTO DATA(texta137) DATA(textb137).
+             <fs_detalle>-importe_dr  = texta137 && '.' && textb137(2).
+           ELSE.
+             <fs_detalle>-importe_dr  = <fs_detalle>-importe_dr  && '.00'.
+           ENDIF.
+           IF CONV i( <fs_detalle>-importe_dr  ) EQ 0.
+             <fs_detalle>-importe_dr  = space.
+           ENDIF.
+           lv_dr = 1.
+         ENDIF.
+*+@0010 {
+         IF <fs_detalle>-imp_sald_inso NE 0.
+           IF <fs_detalle>-base_dr NE 0.
+             lv_temp137 = <fs_detalle>-base_dr * CONV decfloat34( <fs_detalle>-tasa_ocuota_dr ) .    " 29.06.2023 "
+             SPLIT lv_temp137 AT lv_sepdec INTO DATA(lv_sep1) DATA(lv_sep2).
+             lv_temp137 = lv_sep1 && '.' && lv_sep2(2).
+             <fs_detalle>-importe_dr  = lv_temp137.
+           ELSE.                       "11/07/2023
+             READ TABLE lt_bsid INTO DATA(lwa_bsid) WITH KEY belnr = <fs_detalle>-colonia_3.
+             IF sy-subrc = 0.
+               <fs_detalle>-imp_saldo_ant = lwa_bsid-dmbtr.
+             ENDIF.
+             LOOP AT lt_bsid INTO DATA(lwa_bsid1) WHERE belnr NE <fs_detalle>-colonia_3.
+               <fs_detalle>-imp_sald_inso = lwa_bsid1-dmbtr.
+             ENDLOOP.
+             DATA(lv_pagado) = lwa_bsid-dmbtr - lwa_bsid1-dmbtr.
+             <fs_detalle>-imp_pagado   = lv_pagado.
+           ENDIF.
+         ENDIF.
+*}+@0010
+         "@0009 se mueve logica del campo 138 debido a que se necesita el campo base_dr_2 para el nuevo calculo del campo 142
+         "138
+         lo_dao->get_base_dr2(
+           EXPORTING
+             iv_bukrs = ls_bkpf-bukrs
+             iv_belnr = fact
+             iv_pos = '1'
+           IMPORTING
+             rs_base_dr2 = DATA(lv_temp138)
+             rs_tipo_dr2 = DATA(lv_temp138_t) ).
+*+@0010 {
+         IF lv_base_dr IS NOT INITIAL.
+
+           SELECT bukrs belnr fwste        ##WARN_OK "#EC CI_SEL_NESTED
+            FROM bset
+              INTO TABLE lti_impordr2
+               FOR ALL ENTRIES IN lti_nota_cre
+               WHERE   bukrs = 'SL00'
+               AND     belnr = lti_nota_cre-belnr .
+
+           IF sy-subrc = 0.
+             IF <fs_detalle>-imp_sald_inso EQ 0.
+               LOOP AT lti_impordr2 INTO ls_impordr2 WHERE bukrs EQ 'SL00'.
+                 IF sy-subrc = 0.
+                   DATA(lv_impordr2_aux) = lv_temp138 + basedr1-wt_qbshh.
+                   DATA(lv_impordr2) = CONV decfloat34( '0.00' ).
+                   lv_impordr2 = lv_impordr2_aux.
+                   lv_temp138  = lv_impordr2.
+                 ENDIF.
+               ENDLOOP.
+             ELSE.
+               lv_temp138     = ls_bseg-wrbtr.
+             ENDIF.
+           ENDIF.
+         ENDIF.
+*}+@0010
+         IF lv_temp138 NE space.
+           <fs_detalle>-base_dr_2 = CONV decfloat34( lv_temp138 ) * porcentaje.
+           IF <fs_detalle>-base_dr_2 CA lv_sepdec.
+             SPLIT <fs_detalle>-base_dr_2 AT lv_sepdec INTO DATA(texta138) DATA(textb138).
+             <fs_detalle>-base_dr_2 = texta138 && '.' && textb138(2).
+           ELSE.
+             <fs_detalle>-base_dr_2 = <fs_detalle>-base_dr_2 && '.00'.
+           ENDIF.
+           lv_dr = 1.
+         ENDIF.
+*+@0010 {
+         IF <fs_detalle>-imp_sald_inso NE 0.
+           <fs_detalle>-base_dr_2 = CONV decfloat34( lv_temp138 ).
+         ENDIF.
+*}+@0010
+         ls_basep-belnr    =  <fs_detalle>-colonia_3.
+         ls_basep-basiva   =  lv_temp138.
+         APPEND ls_basep TO lti_basep.
+         DATA(lv_cont)     =  sy-tabix.
+         CLEAR lv_temp138.
+         "@0009
+
+         "142
+         DATA(lv_temp142) = lo_dao->get_importe_dr2(
+                                       iv_bukrs = ls_bkpf-bukrs
+                                       iv_belnr = fact
+                                       iv_buzid = 'T' ).
+*+@0010 {
+         IF lv_base_dr IS NOT INITIAL.
+
+           SELECT bukrs belnr fwste
+            FROM bset
+             INTO TABLE lt_nota1_cre
+              FOR ALL ENTRIES IN lti_nota_cre
+              WHERE   bukrs = 'SL00'
+              AND     belnr = lti_nota_cre-belnr.
+
+           IF sy-subrc = 0.
+             IF <fs_detalle>-imp_sald_inso EQ 0.
+               LOOP AT lt_nota1_cre INTO DATA(ls_nt1cred) WHERE bukrs EQ 'SL00' ##NEEDED.
+                 IF sy-subrc = 0.
+                   DATA(basedr2_aux) = CONV decfloat34( lv_temp142 - ls_nt1cred-fwste ) ##NEEDED.
+                   lv_temp142 = basedr2_aux.
+                 ENDIF.
+               ENDLOOP.
+             ELSE.
+               lv_temp142  = import_dr_par.
+             ENDIF.
+           ENDIF.
+         ENDIF.
+*}+@0010
+         IF lv_temp142 NE space.
+           <fs_detalle>-importe_dr_2 = CONV decfloat34( lv_temp142 ) * porcentaje.
+           "@0009
+           lv_temp142cal =  <fs_detalle>-base_dr_2   *  CONV decfloat34( <fs_detalle>-tasa_ocuota_dr_2 ) . "Calculo nuevo del campo 142"
+           SPLIT lv_temp142cal AT lv_sepdec INTO DATA(lv_sepa) DATA(lv_sepb).
+           lv_temp142cal = lv_sepa && '.' && lv_sepb(2). "Se toman solo dos decimales sin redondear con tercer digito"
+           IF lv_temp142cal <> <fs_detalle>-importe_dr_2. "Si el valor consultado en la bseg y el calculador anteriormente son diferentes entonces se cambia"
+             "el valor el campo 142"
+             <fs_detalle>-importe_dr_2 =  lv_temp142cal.
+             CLEAR: lv_temp142cal,lv_sepa,lv_sepb.
+           ENDIF.
+           "@0009
+           IF <fs_detalle>-importe_dr_2 CA lv_sepdec.
+             SPLIT <fs_detalle>-importe_dr_2 AT lv_sepdec INTO DATA(texta) DATA(textb).
+             <fs_detalle>-importe_dr_2 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle>-importe_dr_2 = <fs_detalle>-importe_dr_2 && '.00'.
+           ENDIF.
+           lv_importe_dr = 1.
+         ENDIF.
+*+@0010 {
+         ls_importep-belnr   =  <fs_detalle>-colonia_3.
+         ls_importep-impiva  = lv_temp142.
+         APPEND  ls_importep TO lti_importep.
+*}+@0010
+         CLEAR lv_temp142.
+
+         "144
+         IF <fs_detalle>-importe_dr = space.
+           lv_importe_p1 = lv_importe_p1 + 0.
+         ELSE.
+           lv_importe_p1 = lv_importe_p1 + CONV decfloat34( <fs_detalle>-importe_dr ) .
+         ENDIF.
+
+         "154
+         DATA(lv_temp154) = lo_dao->get_importe_p(
+                               iv_bukrs = ls_bkpf-bukrs
+                               iv_belnr = fact
+                               iv_campo = '122'
+                             ) .
+         IF lv_temp154 NE space.
+           <fs_detalle>-importe_dr_3 = CONV decfloat34( lv_temp154 ) * porcentaje.
+           IF <fs_detalle>-importe_dr_3 CA lv_sepdec.
+             SPLIT <fs_detalle>-importe_dr_3 AT lv_sepdec INTO DATA(texta154) DATA(textb154).
+             <fs_detalle>-importe_dr_3 = texta154 && '.' && textb154(2).
+           ELSE.
+             <fs_detalle>-importe_dr_3 = <fs_detalle>-importe_dr_3 && '.00'.
+           ENDIF.
+           IF CONV i( <fs_detalle>-importe_dr_3 ) EQ 0.
+             <fs_detalle>-importe_dr_3 = space.
+           ENDIF.
+         ENDIF.
+
+         "155
+         IF <fs_detalle>-base_dr_4 NE space.
+           DATA(lv_temp155) = lo_dao->get_base_dr4(
+                                     iv_bukrs = ls_bkpf-bukrs
+                                     iv_belnr = fact
+                                     iv_deta  = '1' ).
+
+           IF lv_temp155 NE space.
+             <fs_detalle>-base_dr_4 = CONV decfloat34( lv_temp155 ) * porcentaje.
+             IF <fs_detalle>-base_dr_4 CA lv_sepdec.
+               SPLIT <fs_detalle>-base_dr_4 AT lv_sepdec INTO DATA(texta155) DATA(textb155).
+               <fs_detalle>-base_dr_4 = texta155 && '.' && textb155(2).
+             ELSE.
+               <fs_detalle>-base_dr_4 = <fs_detalle>-base_dr_4 && '.00'.
+             ENDIF.
+           ENDIF.
+         ENDIF.
+
+         "159
+         DATA(lv_temp159) =  lo_dao->get_importe_dr_4(
+                                     iv_bukrs = ls_bkpf-bukrs
+                                     iv_belnr = fact ).
+
+         IF lv_temp159 NE space.
+           <fs_detalle>-importe_dr_4 = CONV decfloat34( lv_temp159 ) * porcentaje.
+           "@0009
+           lv_temp159cal =  <fs_detalle>-base_dr_4   *  CONV decfloat34( <fs_detalle>-tipo_factor_dr_4 )."Calculo nuevo del campo 159"
+           SPLIT lv_temp159cal AT lv_sepdec INTO DATA(lv_sepa159) DATA(lv_sepb159).
+           lv_temp159cal = lv_sepa159 && '.' && lv_sepb159(2)."Se toman solo dos decimales sin redondear con tercer digito"
+           IF lv_temp159cal <> <fs_detalle>-importe_dr_4. "Si el valor consultado en la bseg y el calculador anteriormente son diferentes entonces se cambia"
+             "el valor el campo 159"
+             <fs_detalle>-importe_dr_4 =  lv_temp159cal.  "asignacion al campo 159"
+             <fs_detalle>-importe_p_4 =   lv_temp159cal.  "asignacion al campo 166"
+             CLEAR: lv_temp159cal,lv_sepa159,lv_sepb159.
+           ENDIF.
+           "@0009
+           IF <fs_detalle>-importe_dr_4 CA lv_sepdec.
+             SPLIT <fs_detalle>-importe_dr_4 AT lv_sepdec INTO DATA(texta159) DATA(textb159).
+             <fs_detalle>-importe_dr_4 = texta159 && '.' && textb159(2).
+           ELSE.
+             <fs_detalle>-importe_dr_4 = <fs_detalle>-importe_dr_4 && '.00'.
+           ENDIF.
+         ENDIF.
+*}+@0006
+         "162
+         IF <fs_detalle>-base_dr_4 = space.
+           lv_base_dr_4 = lv_base_dr_4 + 0.
+         ELSE.
+           lv_base_dr_4 = lv_base_dr_4 + CONV decfloat34( <fs_detalle>-base_dr_4 ) .
+         ENDIF.
+*+@0006{
+         "149
+         IF <fs_detalle>-importe_dr_2 = space.
+           iv_importe_p2 = iv_importe_p2 + 0.
+         ELSE.
+           iv_importe_p2 = iv_importe_p2 + CONV decfloat34( <fs_detalle>-importe_dr_2 ).
+         ENDIF.
+
+         "121
+         IF <fs_detalle>-importe_dr = space.
+           lv_total_retenciones_iva = lv_total_retenciones_iva + 0.
+         ELSEIF <fs_detalle>-moneda_p NE 'MXN'.
+           lv_total_retenciones_iva = lv_total_retenciones_iva + CONV decfloat34( <fs_detalle>-importe_dr ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) .
+         ELSE.
+           lv_total_retenciones_iva = lv_total_retenciones_iva + CONV decfloat34( <fs_detalle>-importe_dr ).
+         ENDIF.
+
+         "122
+         IF <fs_detalle>-importe_dr_3 = space.
+           iv_total_retenciones_isr = iv_total_retenciones_isr + 0.
+         ELSEIF <fs_detalle>-moneda_p NE 'MXN'.
+           iv_total_retenciones_isr = iv_total_retenciones_isr + CONV decfloat34( <fs_detalle>-importe_dr_3 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) .
+         ELSE.
+           iv_total_retenciones_isr = iv_total_retenciones_isr + CONV decfloat34( <fs_detalle>-importe_dr_3 ).
+         ENDIF.
+
+         "123
+         IF <fs_detalle>-importe_dr_4 = space.
+           iv_total_retenciones_ieps = iv_total_retenciones_ieps + 0.
+         ELSEIF <fs_detalle>-moneda_p NE 'MXN'.
+           iv_total_retenciones_ieps = iv_total_retenciones_ieps + CONV decfloat34( <fs_detalle>-importe_dr_4 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) .
+         ELSE.
+           iv_total_retenciones_ieps = iv_total_retenciones_ieps + CONV decfloat34( <fs_detalle>-importe_dr_4 ).
+         ENDIF.
+
+         "145
+         IF <fs_detalle>-base_dr_2 = space.
+           lv_base_dr_2 = lv_base_dr_2 + 0.
+         ELSE.
+           lv_base_dr_2 = lv_base_dr_2 + CONV decfloat34( <fs_detalle>-base_dr_2 ) .
+         ENDIF.
+
+         "124
+         IF lv_dr = 1.
+           IF lv_temp138_t = abap_true.
+             IF <fs_detalle>-base_dr_2 EQ '0.00'.
+               iv_total_traslados_baseiva_16 = 0.
+             ELSE.
+               IF <fs_detalle>-base_dr_2 = space.
+                 iv_total_traslados_baseiva_16 = iv_total_traslados_baseiva_16 + 0.
+               ELSE.
+
+                 IF <fs_detalle>-moneda_p NE 'MXN'.
+                   iv_total_traslados_baseiva_16 = iv_total_traslados_baseiva_16 + ( CONV decfloat34( <fs_detalle>-base_dr_2 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+                 ELSE.
+                   iv_total_traslados_baseiva_16 = iv_total_traslados_baseiva_16 +  CONV decfloat34( <fs_detalle>-base_dr_2 ).
+                 ENDIF.
+               ENDIF.
+             ENDIF.
+           ELSE.
+             iv_total_traslados_baseiva_16 = 0.
+           ENDIF.
+         ELSE.
+           IF <fs_detalle>-base_dr_4 EQ '0.00'.
+             iv_total_traslados_baseiva_16 = 0.
+           ELSE.
+             IF <fs_detalle>-base_dr_4 = space.
+               iv_total_traslados_baseiva_16 = iv_total_traslados_baseiva_16 + 0.
+             ELSE.
+               IF <fs_detalle>-moneda_p NE 'MXN'.
+                 iv_total_traslados_baseiva_16 = iv_total_traslados_baseiva_16 + ( CONV decfloat34( <fs_detalle>-base_dr_4 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+               ELSE.
+                 iv_total_traslados_baseiva_16 = iv_total_traslados_baseiva_16 +  CONV decfloat34( <fs_detalle>-base_dr_4 ).
+               ENDIF.
+             ENDIF.
+           ENDIF.
+         ENDIF.
+
+         "125
+         IF lv_importe_dr = 1.
+           IF <fs_detalle>-importe_dr_2 = space.
+             iv_total_traslados_imposiva_16 = iv_total_traslados_imposiva_16 + 0.
+           ELSE.
+             IF <fs_detalle>-moneda_p NE 'MXN'.
+               iv_total_traslados_imposiva_16 = iv_total_traslados_imposiva_16 + ( CONV decfloat34( <fs_detalle>-importe_dr_2 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+             ELSE.
+               iv_total_traslados_imposiva_16 = iv_total_traslados_imposiva_16 + CONV decfloat34( <fs_detalle>-importe_dr_2 ).
+             ENDIF.
+           ENDIF.
+         ELSE.
+           IF <fs_detalle>-importe_dr_4 = space.
+             iv_total_traslados_imposiva_16 = iv_total_traslados_imposiva_16 + 0.
+           ELSE.
+             IF <fs_detalle>-moneda_p NE 'MXN'.
+               iv_total_traslados_imposiva_16 = iv_total_traslados_imposiva_16 + ( CONV decfloat34( <fs_detalle>-importe_dr_4 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+             ELSE.
+               iv_total_traslados_imposiva_16 = iv_total_traslados_imposiva_16 + CONV decfloat34( <fs_detalle>-importe_dr_4 ).
+             ENDIF.
+           ENDIF.
+         ENDIF.
+
+         IF iv_total_traslados_baseiva_8 NE 0.
+           IF <fs_detalle>-base_dr_2 = space.
+             iv_total_traslados_baseiva_8 = iv_total_traslados_baseiva_8 + 0.
+           ELSE.
+             IF <fs_detalle>-moneda_p NE 'MXN'.
+               iv_total_traslados_baseiva_8 = iv_total_traslados_baseiva_8 + ( CONV decfloat34( <fs_detalle>-base_dr_2 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+             ELSE.
+               iv_total_traslados_baseiva_8 = iv_total_traslados_baseiva_8 +  CONV decfloat34( <fs_detalle>-base_dr_2 ).
+             ENDIF.
+           ENDIF.
+         ENDIF.
+
+         "127
+         IF iv_total_traslados_imposiva_8 NE 0.
+           IF <fs_detalle>-impuesto_dr_2 = space.
+             iv_total_traslados_imposiva_8 = iv_total_traslados_imposiva_8 + 0.
+           ELSE.
+             IF <fs_detalle>-moneda_p NE 'MXN'.
+               iv_total_traslados_imposiva_8 = iv_total_traslados_imposiva_8 + ( CONV decfloat34( <fs_detalle>-impuesto_dr_2 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+             ELSE.
+               iv_total_traslados_imposiva_8 = iv_total_traslados_imposiva_8 + CONV decfloat34( <fs_detalle>-impuesto_dr_2 ) .
+             ENDIF.
+           ENDIF.
+         ENDIF.
+
+         "128
+         IF iv_total_traslados_baseiva_0 NE 0.
+           IF <fs_detalle>-base_dr_2 = space.
+             iv_total_traslados_baseiva_0 = iv_total_traslados_baseiva_0 + 0.
+           ELSE.
+             IF <fs_detalle>-moneda_p NE 'MXN'.
+               iv_total_traslados_baseiva_0 = iv_total_traslados_baseiva_0 + ( CONV decfloat34( <fs_detalle>-base_dr_2 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+             ELSE.
+               iv_total_traslados_baseiva_0 = iv_total_traslados_baseiva_0 + CONV decfloat34( <fs_detalle>-base_dr_2 ).
+             ENDIF.
+           ENDIF.
+         ENDIF.
+
+         "129
+         IF <fs_detalle>-importe_dr_3 = space.
+           iv_total_traslados_imposiva_0 = iv_total_traslados_imposiva_0 + 0.
+         ELSE.
+           IF <fs_detalle>-moneda_p NE 'MXN'.
+             iv_total_traslados_imposiva_0 = iv_total_traslados_imposiva_0 + ( CONV decfloat34( <fs_detalle>-importe_dr_3 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+           ELSE.
+             iv_total_traslados_imposiva_0 = iv_total_traslados_imposiva_0 + CONV decfloat34( <fs_detalle>-importe_dr_3 ).
+           ENDIF.
+         ENDIF.
+
+         "130
+         IF <fs_detalle>-base_dr_4 = space.
+           iv_total_tras_baseiva_exento = iv_total_tras_baseiva_exento + 0.
+         ELSE.
+           IF <fs_detalle>-moneda_p NE 'MXN'.
+             iv_total_tras_baseiva_exento = iv_total_tras_baseiva_exento + ( CONV decfloat34( <fs_detalle>-base_dr_4 ) * CONV decfloat34( <fs_detalle>-tipo_cambio_p ) ).
+           ELSE.
+             iv_total_tras_baseiva_exento = iv_total_tras_baseiva_exento + CONV decfloat34( <fs_detalle>-base_dr_4 ).
+           ENDIF.
+         ENDIF.
+
+         "131
+         IF <fs_detalle>-moneda_p NE 'MXN'.
+           <fs_detalle>-monto_total_pagos = <fs_detalle>-monto * CONV decfloat34( <fs_detalle>-tipo_cambio_p ).
+         ELSE.
+           <fs_detalle>-monto_total_pagos = <fs_detalle>-monto.
+         ENDIF.
+
+         "150
+         DATA(lv_basedr3) = lo_dao->get_base_dr(
+                                     iv_bukrs = ls_bkpf-bukrs
+                                     iv_belnr = fact
+                                     iv_deta  = 'IMPTO_RETE2' ) .
+
+         IF lv_basedr3 NE space.
+           <fs_detalle>-base_dr_3 = CONV decfloat34( lv_basedr3 ) * porcentaje.
+           IF <fs_detalle>-base_dr_3 CA lv_sepdec.
+             SPLIT <fs_detalle>-base_dr_3 AT lv_sepdec INTO texta textb.
+             <fs_detalle>-base_dr_3 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle>-base_dr_3 = <fs_detalle>-base_dr_3 && '.00'.
+           ENDIF.
+           IF CONV i( <fs_detalle>-base_dr_3 ) EQ 0.
+             <fs_detalle>-base_dr_3 = space.
+           ENDIF.
+         ENDIF.
+*}+@0006
+         "161
+         DATA(lv_temp6) = lo_dao->get_importe_p(
+                             iv_bukrs = ls_bkpf-bukrs
+                             iv_belnr = fact
+                             iv_campo = '122'
+                           ) .
+
+         IF lv_temp6 NE space.
+           <fs_detalle>-importe_p_3 = CONV decfloat34( lv_temp6 ) * porcentaje.
+           IF <fs_detalle>-importe_p_3 CA lv_sepdec.
+             SPLIT <fs_detalle>-importe_p_3 AT lv_sepdec INTO texta textb.
+             <fs_detalle>-importe_p_3 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle>-importe_p_3 = <fs_detalle>-importe_p_3 && '.00'.
+           ENDIF.
+           IF CONV i( <fs_detalle>-importe_p_3 ) EQ 0.
+             <fs_detalle>-importe_p_3 = space.
+           ENDIF.
+         ENDIF.
+       ENDIF.
+*+@0010 {
+       "145
+       <fs_detalle>-importe_p = <fs_detalle>-importe_dr_2.
+*}+@0010
+*+@0010 {
+       IF <fs_detalle>-base_dr EQ 0 AND <fs_detalle>-importe_dr IS INITIAL.
+         LOOP AT lt_bsad ASSIGNING FIELD-SYMBOL(<fs_bsad1>) WHERE zuonr NE space.
+           IF <fs_bsad1>-belnr(1) = '4'.
+             CLEAR:   <fs_bsad1>-zuonr .
+           ENDIF.
+         ENDLOOP.
+
+         SELECT bukrs belnr witht wt_qbshh
+          FROM with_item
+           INTO TABLE lti_nota_credito
+            WHERE  bukrs = 'SL00'
+            AND    belnr = <fs_detalle>-colonia_3.
+
+         LOOP AT lt_bsad INTO DATA(ls_bsad_3) WHERE zuonr NE space.
+           ls_nota_cre2-bukrs    = ls_bsad_3-bukrs.
+           ls_nota_cre2-belnr     = ls_bsad_3-belnr.
+           APPEND ls_nota_cre2 TO lti_credito.
+         ENDLOOP.
+
+         DELETE ADJACENT DUPLICATES FROM lti_credito COMPARING bukrs belnr.
+
+         SELECT bukrs belnr fwbas fwste
+          FROM bset
+           INTO TABLE lti_impordr2
+            WHERE   bukrs = 'SL00'
+            AND     belnr = <fs_detalle>-colonia_3.
+
+           SELECT bukrs belnr wrbtr rebzg FROM bseg
+            INTO TABLE lti_parci
+             FOR ALL ENTRIES IN lti_credito
+              WHERE bukrs = lti_credito-bukrs
+              AND   belnr = lti_credito-belnr
+              AND   rebzg <> space.
+
+           SELECT bukrs belnr fwbas fwste
+             FROM bset
+              INTO TABLE lti_bsetsinrt
+               FOR ALL ENTRIES IN lti_credito
+                WHERE   bukrs = lti_credito-bukrs
+                AND     belnr = lti_credito-belnr.
+
+         IF lti_parci IS NOT INITIAL.
+           LOOP AT lti_parci INTO DATA(lwa_parci) WHERE rebzg = <fs_detalle>-colonia_3.
+             READ TABLE lt_bsid INTO DATA(lwa_bsid2) WITH KEY belnr = lwa_parci-rebzg.
+             IF sy-subrc = 0.
+               READ TABLE lti_impordr2 INTO DATA(lwa_base) WITH KEY belnr = lwa_parci-rebzg bukrs = lwa_parci-bukrs.
+               IF sy-subrc = 0.
+                 DATA(lv_regla3) = CONV decfloat34( lwa_bsid1-dmbtr  * lwa_base-fwbas  / lwa_bsid-dmbtr ).
+                 lv_reglade3    = lv_regla3.
+                 SPLIT lv_reglade3 AT lv_sepdec INTO DATA(text1) DATA(text2).
+                 lv_reglade3 = text1 && '.' && text2(2).                                            "Calculo Regla de 3
+                 READ TABLE lti_bsetsinrt INTO DATA(lwa_bsetsinrt) WITH KEY bukrs = lwa_parci-bukrs belnr = lwa_parci-belnr.
+                 IF sy-subrc = 0.
+                   DATA(lv_badr2sint) = CONV decfloat34( lv_regla3 - lwa_bsetsinrt-fwbas ).         "Calculo Base_Dr2
+                   lv_bdr2sint  = lv_badr2sint.
+                   SPLIT lv_bdr2sint AT lv_sepdec INTO DATA(textuno) DATA(textdos).
+                   lv_bdr2sint = textuno && '.' && textdos(2).
+                   DATA(lv_imp_dr2) = lv_badr2sint * <fs_detalle>-tasa_ocuota_dr_2.                 "Calculo Importe_Dr2
+                   lv_im_dr2   = lv_imp_dr2.
+                   SPLIT lv_im_dr2 AT lv_sepdec INTO DATA(textone) DATA(texttwo).
+                   lv_im_dr2 = textone && '.' && texttwo(2).
+                   <fs_detalle>-base_dr_2       = lv_bdr2sint.
+                   <fs_detalle>-importe_dr_2    = lv_im_dr2.
+
+                   READ TABLE lti_basep ASSIGNING FIELD-SYMBOL(<fs_basep>) WITH KEY belnr = <fs_detalle>-colonia_3.
+                   IF sy-subrc = 0.
+                     <fs_basep>-basiva   = lv_reglade3.
+                   ENDIF.
+
+                   CLEAR: lv_aux1, lv_basep.
+                   LOOP AT lti_basep INTO DATA(lwa_basep) WHERE belnr NE space.
+                     lv_aux1 = lv_aux1 + lwa_basep-basiva.
+                   ENDLOOP.
+                   READ TABLE lti_credito INTO DATA(lwa_credi) WITH KEY bukrs = 'SL00'.
+                   IF sy-subrc = 0.
+                     READ TABLE lti_bsetsinrt INTO DATA(lwa_nota) WITH KEY belnr = lwa_credi-belnr.
+                     IF sy-subrc   = 0.
+                       lv_basep = lv_aux1 - lwa_nota-fwbas.
+                       DATA(lv_imp_regla3) = CONV decfloat34( lwa_nota-fwste + lv_im_dr2 ).                                                      "13.07.2023
+                     ENDIF.
+                   ENDIF.
+                   READ TABLE lti_importep ASSIGNING FIELD-SYMBOL(<fs_importep>) WITH KEY belnr = <fs_detalle>-colonia_3.
+                   IF sy-subrc = 0.
+                     <fs_importep>-impiva   = lv_imp_regla3.
+                   ENDIF.
+                   CLEAR lv_aux2.
+                   LOOP AT lti_importep INTO DATA(lwa_importep) WHERE belnr NE space.
+                     lv_aux2 = lv_aux2 + lwa_importep-impiva.
+                   ENDLOOP.
+                   DATA(lv_importep) =   CONV decfloat34( lv_aux2 - lwa_nota-fwste ).                                                                                          "13.07.2023
+                 ENDIF.
+               ENDIF.
+             ELSE.
+               DATA(lv_sinrt) = abap_true.
+             ENDIF.
+           ENDLOOP.
+         ENDIF.
+       ENDIF.
+       IF lv_sinrt = abap_true.
+         CLEAR: lv_aux3, lv_aux4.
+         LOOP AT lti_basep INTO DATA(lwa_basep2) WHERE belnr NE space.
+           lv_aux3 = lv_aux3 + lwa_basep2-basiva.
+         ENDLOOP.
+         LOOP AT lti_importep INTO DATA(lwa_importep2) WHERE belnr NE space.
+           lv_aux4 = lv_aux4 + lwa_importep2-impiva.
+         ENDLOOP.
+       ENDIF.
+*}+@0010
+       CLEAR: ls_bsid.
+       CLEAR: ls_bsad.
+     ENDLOOP.
+    CLEAR: lti_basep, lti_importep.
+*+@0010 {
+     CONSTANTS lv_space TYPE string VALUE space.
+     READ TABLE lt_detalle INTO DATA(lt_tsinreten) WITH KEY importe_p = lv_space.
+*}+@0010
+     LOOP AT lt_detalle ASSIGNING FIELD-SYMBOL(<fs_detalle2>).
+       fact = <fs_detalle2>-colonia_3.
+       READ TABLE lt_bsid ASSIGNING FIELD-SYMBOL(<ls_bsid2>) ##NEEDED
+           WITH KEY
+             belnr = fact
+             bschl = '01'.
+
+       IF sy-subrc EQ 0.
+         DATA(iv_bsid2) = 1.
+       ELSE.
+         iv_bsid2 = 0.
+       ENDIF.
+*+@0010 {
+       IF <fs_detalle2>-objeto_imp_dr IS INITIAL.
+         READ TABLE lt_bsad ASSIGNING FIELD-SYMBOL(<ls_bsad1>) ##NEEDED
+             WITH KEY
+               belnr = fact
+               bschl = '01'
+               mwskz = 'IV'.
+         IF sy-subrc = 0.
+           DATA(lv_obj) = <ls_bsad1>-mwskz ##NEEDED .
+           CONCATENATE <ls_bsad1>-mwskz ' IE' INTO DATA(lv_obj_aux) SEPARATED BY ','.
+
+           SELECT id_obj codimpo ob_imdr
+             FROM zfic_obj_imp_dr
+             INTO TABLE lt_obj
+              WHERE codimpo = lv_obj_aux.
+
+           IF sy-subrc = 0.
+             READ TABLE lt_obj INTO DATA(ls_obj) WITH KEY codimpo = lv_obj_aux ##WARN_OK .
+             IF sy-subrc = 0.
+               <fs_detalle2>-objeto_imp_dr   = ls_obj-ob_imdr.
+             ENDIF.
+           ENDIF.
+         ENDIF.
+       ENDIF.
+*}+@0010
+       CLEAR: <fs_detalle2>-colonia_3.
+
+       IF sy-subrc EQ 0.
+         DATA(iv_bsad2) = 1.
+       ELSE.
+         iv_bsad2 = 0.
+       ENDIF.
+       "EQ = 1"
+       IF ( lv_base_dr NE 0 ) OR ( iv_bsid2 EQ 1 ) OR ( lv_aux_qbshb IS NOT INITIAL ).
+         "144   +@0006
+         IF lv_importe_p1 = 0.
+           <fs_detalle2>-importe_p = space.
+         ELSE.
+           <fs_detalle2>-importe_p = CONV decfloat34( lv_importe_p1 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-importe_p CA lv_sepdec.
+             SPLIT <fs_detalle2>-importe_p AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-importe_p = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-importe_p = <fs_detalle2>-importe_p && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "145 +@0006
+         IF lv_base_dr_2 = 0.
+           <fs_detalle2>-base_p = space.
+         ELSE.
+           <fs_detalle2>-base_p = CONV decfloat34( lv_base_dr_2 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-base_p CA lv_sepdec.
+             SPLIT <fs_detalle2>-base_p AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-base_p = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-base_p = <fs_detalle2>-base_p && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "149 +@0006
+         IF iv_importe_p2 = 0.
+           <fs_detalle2>-importe_p_2 = space.
+         ELSE.
+           <fs_detalle2>-importe_p_2 = CONV decfloat34( iv_importe_p2 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-importe_p_2 CA lv_sepdec.
+             SPLIT <fs_detalle2>-importe_p_2 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-importe_p_2 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-importe_p_2 = <fs_detalle2>-importe_p_2 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "162
+         IF lv_base_dr_4 = 0.
+           <fs_detalle2>-base_p_2 = space.
+         ELSE.
+           <fs_detalle2>-base_p_2 = CONV decfloat34( lv_base_dr_4 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-base_p_2 CA lv_sepdec.
+             SPLIT <fs_detalle2>-base_p_2 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-base_p_2 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-base_p_2 = <fs_detalle2>-base_p_2 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "121
+         IF lv_total_retenciones_iva = 0.
+           <fs_detalle2>-total_retenciones_iva = space.
+         ELSE.
+           <fs_detalle2>-total_retenciones_iva = CONV decfloat34( lv_total_retenciones_iva ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_retenciones_iva CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_retenciones_iva AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_retenciones_iva = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_retenciones_iva = <fs_detalle2>-total_retenciones_iva && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "122
+         IF iv_total_retenciones_isr = 0.
+           <fs_detalle2>-total_retenciones_isr = space.
+         ELSE.
+           <fs_detalle2>-total_retenciones_isr = CONV decfloat34( iv_total_retenciones_isr ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_retenciones_isr CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_retenciones_isr AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_retenciones_isr = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_retenciones_isr = <fs_detalle2>-total_retenciones_isr && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "123
+         IF iv_total_retenciones_ieps = 0.
+           <fs_detalle2>-total_retenciones_ieps = space.
+         ELSE.
+           <fs_detalle2>-total_retenciones_ieps = CONV decfloat34( iv_total_retenciones_ieps ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_retenciones_ieps CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_retenciones_ieps AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_retenciones_ieps = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_retenciones_ieps = <fs_detalle2>-total_retenciones_ieps && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "124
+         IF iv_total_traslados_baseiva_16 = 0.
+           <fs_detalle2>-total_traslados_base_iva16 = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_base_iva16 = CONV decfloat34( iv_total_traslados_baseiva_16 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_traslados_base_iva16 CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_base_iva16 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_base_iva16 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_base_iva16 = <fs_detalle2>-total_traslados_base_iva16 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "125
+         IF iv_total_traslados_imposiva_16 = 0.
+           <fs_detalle2>-total_traslados_impuesto_iva16 = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_impuesto_iva16 = CONV decfloat34( iv_total_traslados_imposiva_16 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_traslados_impuesto_iva16 CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_impuesto_iva16 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_impuesto_iva16 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_impuesto_iva16 = <fs_detalle2>-total_traslados_impuesto_iva16 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "130
+         IF iv_total_tras_baseiva_exento = 0.
+           <fs_detalle2>-total_traslados_base_ivaexento = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_base_ivaexento = CONV decfloat34( iv_total_tras_baseiva_exento ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_traslados_base_ivaexento CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_base_ivaexento AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_base_ivaexento = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_base_ivaexento = <fs_detalle2>-total_traslados_base_ivaexento && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "126
+         IF iv_total_traslados_baseiva_8 = 0.
+           <fs_detalle2>-total_traslados_base_iva8 = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_base_iva8 = CONV decfloat34( iv_total_traslados_baseiva_8 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_traslados_base_iva8 CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_base_iva8 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_base_iva8 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_base_iva8 = <fs_detalle2>-total_traslados_base_iva8 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "127
+         IF iv_total_traslados_imposiva_8 = 0.
+           <fs_detalle2>-total_traslados_impuesto_iva8 = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_impuesto_iva8 = CONV decfloat34( iv_total_traslados_imposiva_8 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_traslados_impuesto_iva8 CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_impuesto_iva8 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_impuesto_iva8 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_impuesto_iva8 = <fs_detalle2>-total_traslados_impuesto_iva8 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "128
+         IF iv_total_traslados_baseiva_0 = 0.
+           <fs_detalle2>-total_traslados_base_iva0 = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_base_iva0 = CONV decfloat34( iv_total_traslados_baseiva_0 ) ##OPERATOR[DECFLOAT34].
+           IF <fs_detalle2>-total_traslados_base_iva0 CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_base_iva0 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_base_iva0 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_base_iva0 = <fs_detalle2>-total_traslados_base_iva0 && '.00'.
+           ENDIF.
+         ENDIF.
+
+         "129
+         IF iv_total_traslados_imposiva_0 = 0.
+           <fs_detalle2>-total_traslados_impuesto_iva0 = space.
+         ELSE.
+           <fs_detalle2>-total_traslados_impuesto_iva0 = CONV decfloat34( iv_total_traslados_imposiva_0 ) ##OPERATOR[DECFLOAT34].
+
+           IF <fs_detalle2>-total_traslados_impuesto_iva0 CA lv_sepdec.
+             SPLIT <fs_detalle2>-total_traslados_impuesto_iva0 AT lv_sepdec INTO texta textb.
+             <fs_detalle2>-total_traslados_impuesto_iva0 = texta && '.' && textb(2).
+           ELSE.
+             <fs_detalle2>-total_traslados_impuesto_iva0 = <fs_detalle2>-total_traslados_impuesto_iva0 && '.00'.
+           ENDIF.
+         ENDIF.
+       ENDIF.
+*+@0010 {
+       IF ( lt_tsinreten-importe_p IS INITIAL ).
+
+         CLEAR <fs_detalle2>-importe_p.
+         IF lv_basep IS NOT INITIAL.
+           <fs_detalle2>-importe_p_2 = lv_importep.
+           <fs_detalle2>-total_traslados_impuesto_iva16 = lv_importep.
+         ENDIF.
+
+         IF lv_basep IS NOT INITIAL.
+           <fs_detalle2>-base_p = lv_basep.
+           <fs_detalle2>-total_traslados_base_iva16 = lv_basep.
+         ENDIF.
+       ENDIF.
+       IF lv_sinrt = abap_true.
+         <fs_detalle2>-base_p   = lv_aux3.
+         <fs_detalle2>-total_traslados_base_iva16 = lv_aux3.
+         <fs_detalle2>-importe_p_2 = lv_aux4.
+         <fs_detalle2>-total_traslados_impuesto_iva16 = lv_aux4.
+       ENDIF.
+     ENDLOOP.
+     "145
+     IF lti_nota_credito IS NOT INITIAL.
+       <fs_detalle>-importe_p = <fs_detalle>-importe_dr_2.
+     ENDIF.
+*}+@0010
+     IF lti_compl_timbre IS NOT INITIAL.
+       lv_timbre_fact = '*'.
+       MODIFY zfi_compl_timbre FROM TABLE lti_compl_timbre.
+     ENDIF.
+
+     ls_out-complemento_pagos_notificacion-metadatos-nom_archivo         = lv_title .
+     ls_out-complemento_pagos_notificacion-cab_distribucion-destinatario = is_data-destinatarios.
+     ls_out-complemento_pagos_notificacion-det_complemento-compl_pago    = lt_detalle.
+     ls_out-complemento_pagos_notificacion-pie_fin                       = 'FIN'.
+
+     TRY .
+         lo_objint->notificar_complemento_pagos_as( output = ls_out ).
+       CATCH cx_ai_system_fault INTO DATA(lo_msg) ##NEEDED ##NO_HANDLER.
+
+     ENDTRY.
+
+     ls_timbresuuid-sociedad         = ls_bkpf-bukrs.
+     ls_timbresuuid-tipo_comprobante = ls_bkpf-blart.
+     ls_timbresuuid-documento        = ls_bkpf-belnr.
+     ls_timbresuuid-serie            = ls_bkpf-blart.
+     ls_timbresuuid-folio            = ls_bkpf-belnr.
+     ls_timbresuuid-timbres_facturas = lv_timbre_fact.
+     ls_timbresuuid-estado           = 'P'.
+
+     READ TABLE lt_param WITH KEY id_camp = gc_constantes-clase_doc
+     INTO DATA(ls_clase_doc).
+
+     IF ls_clase_doc-valor EQ ls_timbresuuid-tipo_comprobante.
+       lo_dao->save_timbresuuid( ls_timbresuuid ).
+     ENDIF.
+
+   ENDMETHOD.
+
